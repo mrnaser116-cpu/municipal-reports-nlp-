@@ -27,3 +27,10 @@ An intelligent municipal report analysis project using Natural Language Processi
 ### التطبيقات العملية
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/mrnaser116-cpu/municipal-reports-nlp-/blob/main/all_lap_sdaia_Ai%20%281%29.ipynb)
+
+
+
+
+## Live Demo
+
+[Municipal Reports - Streamlit Demo](https://baladiya-nlp-demo.streamlit.app)
