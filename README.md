@@ -1,2 +1,3 @@
-# municipal-reports-nlp-
-Arabic NLP project covering Labs 1 to 6 slides and practical implementations on municipal media-A89D3AF9-30E7-... • reports
+Municipal Reports NLP -#)
+Theoretical Slides & Practical Labs
+media-701ECA10-A5FB... ( (Labs 1-6)
