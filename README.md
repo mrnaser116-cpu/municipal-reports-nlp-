@@ -22,3 +22,7 @@ An intelligent municipal report analysis project using Natural Language Processi
 - AI Engineer Track
 - SDA-AIE-211
 - Natural Language Processing with Transformers
+
+## Run the Project
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/mrnaser116-cpu/municipal-reports-nlp-/blob/main/Municipal_Reports_Project%20%208.ipynb)
