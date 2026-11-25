@@ -1,4 +1,6 @@
 # Municipal Reports – NLP Capstone Project
+
+#NAME : ناصر العتيبي
 ## بلاغات البلدية
 
 ### Project Overview
@@ -46,6 +48,15 @@ An intelligent municipal report analysis project using Natural Language Processi
 Nasser Alotaibi - ناصر العتيبي
 
 **Live Demo:** https://sage-bavarois-c0c23a.netlify.app
+
+
+
+
+
+
+
+
+
 
 Open Balagh AI – Upgraded Demo
 https://share.streamlit.io/-/auth/app?redirect_uri=https%3A%2F%2Fbalagh-ai-v2.streamlit.app%2F 
