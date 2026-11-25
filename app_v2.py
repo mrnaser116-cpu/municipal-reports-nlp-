@@ -358,8 +358,7 @@ def analyze(text):
 
     try:
 
-        reranker = load_reranker()
-
+        raise RuntimeError("Cross-Encoder disabled to save memory")
         pairs = [
             [safe, item]
             for item in similar["البلاغ"]
@@ -387,8 +386,7 @@ def analyze(text):
 
     try:
 
-        tokenizer, model = load_transformer()
-
+        raise RuntimeError("CAMeLBERT disabled to save memory")
         inputs = tokenizer(
             safe,
             return_tensors="pt",
