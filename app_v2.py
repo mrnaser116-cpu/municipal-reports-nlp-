@@ -2,18 +2,21 @@ import re
 import uuid
 import sqlite3
 from datetime import datetime
+from contextlib import closing
 
 import streamlit as st
 import pandas as pd
 import numpy as np
-import torch
-import faiss
 
-from transformers import AutoTokenizer, AutoModel
-from sentence_transformers import SentenceTransformer, CrossEncoder
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.metrics import (
+    classification_report,
+    confusion_matrix
+)
+from sklearn.metrics.pairwise import cosine_similarity
 
 st.set_page_config(
     page_title="Balagh AI",
@@ -23,26 +26,18 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-.stApp {
-    background: #f3f7f5;
-}
 .block-container {
+    max-width: 1150px;
     padding-top: 2rem;
-    max-width: 1200px;
-}
-h1, h2, h3 {
-    color: #17634c;
 }
 .stButton > button {
     background: #17634c;
     color: white;
     border-radius: 10px;
     width: 100%;
-    min-height: 45px;
 }
 [data-testid="stMetric"] {
-    background: #ffffff;
-    border: 1px solid #dce8e2;
+    border: 1px solid #a9c9bc;
     border-radius: 14px;
     padding: 20px;
 }
@@ -60,7 +55,12 @@ DATA = {
         "الماء لا يصل إلى البيت",
         "تسرب الموية في الشارع",
         "Water supply is not working",
-        "Water leaking from a pipe"
+        "Water leaking from a pipe",
+        "المواسير تسرب مياه",
+        "انقطاع الماء اليوم",
+        "فيه موية تتسرب من الانبوب",
+        "No water in the neighborhood",
+        "Low water pressure"
     ],
     "الطرق": [
         "تعطل الإشارة المرورية",
@@ -72,7 +72,12 @@ DATA = {
         "الطريق مليان حفر",
         "تلف الطريق عند التقاطع",
         "Traffic signal is broken",
-        "Large pothole in the road"
+        "Large pothole in the road",
+        "حفرة خطيرة في الشارع",
+        "تشققات في الاسفلت",
+        "الاشارة ما تشتغل",
+        "Damaged road surface",
+        "Broken sidewalk"
     ],
     "النفايات": [
         "تراكم النفايات قرب الحاويات",
@@ -84,7 +89,12 @@ DATA = {
         "لم يتم جمع المخلفات",
         "تحتاج الحاوية إلى تنظيف",
         "Garbage is accumulating",
-        "Waste containers are full"
+        "Waste containers are full",
+        "تكدس القمامة بجانب المنازل",
+        "الزبالة ما انشالت",
+        "نفايات منتشرة قرب الحديقة",
+        "Garbage collection delayed",
+        "Waste on the sidewalk"
     ],
     "الإنارة": [
         "تلف إنارة الممر",
@@ -96,7 +106,12 @@ DATA = {
         "صيانة أعمدة الإنارة",
         "انطفاء إنارة الحديقة",
         "Street lights are broken",
-        "The street is dark"
+        "The street is dark",
+        "لمبات الشارع طافية",
+        "الممر بدون إنارة",
+        "عمود النور خربان",
+        "Broken street lamp",
+        "Public lighting failure"
     ],
     "الخدمات الرقمية": [
         "لا أستطيع تقديم البلاغ إلكترونيا",
@@ -108,12 +123,16 @@ DATA = {
         "لا يمكن رفع المرفقات",
         "مشكلة في تطبيق البلدية",
         "Application is not working",
-        "Unable to submit online report"
+        "Unable to submit online report",
+        "التطبيق يعلق عند ارسال البلاغ",
+        "ما اقدر ادخل حسابي",
+        "الخدمة الالكترونية متوقفة",
+        "Login error on the website",
+        "Cannot upload attachments"
     ]
 }
 
 def clean_text(text):
-
     text = text.translate(str.maketrans(
         "٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹",
         "01234567890123456789"
@@ -121,22 +140,28 @@ def clean_text(text):
 
     text = re.sub(
         r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}",
-        "[EMAIL]", text
+        "[EMAIL]",
+        text
     )
 
     text = re.sub(
-        r"(?:\+?966|00966|0)5(?:[\s-]*\d){8}\b",
-        "[PHONE]", text
+        r"(?<!\d)(?:\+966|00966|966|0)5"
+        r"(?:[\s-]*\d){8}(?!\d)",
+        "[PHONE]",
+        text
     )
 
     text = re.sub(
         r"\b(?:REP|REPORT|BLG|REF)[-\s#]*\d+\b",
-        "[REFERENCE]", text, flags=re.I
+        "[REFERENCE]",
+        text,
+        flags=re.I
     )
 
     text = re.sub(
         r"[\u064B-\u065F\u0670\u0640]",
-        "", text
+        "",
+        text
     )
 
     text = re.sub(r"[أإآ]", "ا", text)
@@ -154,10 +179,79 @@ for category, samples in DATA.items():
         labels.append(category)
 
 
+def create_model():
+    return Pipeline([
+        (
+            "tfidf",
+            TfidfVectorizer(
+                analyzer="char",
+                ngram_range=(2, 5),
+                max_features=15000,
+                sublinear_tf=True
+            )
+        ),
+        (
+            "classifier",
+            LogisticRegression(
+                max_iter=1000,
+                random_state=42,
+                C=5
+            )
+        )
+    ])
+
+
+@st.cache_resource
+def train_model():
+
+    x_train, x_test, y_train, y_test = (
+        train_test_split(
+            texts,
+            labels,
+            test_size=0.25,
+            random_state=42,
+            stratify=labels
+        )
+    )
+
+    evaluation_model = create_model()
+
+    evaluation_model.fit(
+        x_train,
+        y_train
+    )
+
+    predictions = evaluation_model.predict(
+        x_test
+    )
+
+    metrics = classification_report(
+        y_test,
+        predictions,
+        labels=list(DATA.keys()),
+        output_dict=True,
+        zero_division=0
+    )
+
+    model = create_model()
+
+    model.fit(texts, labels)
+
+    return {
+        "model": model,
+        "metrics": metrics,
+        "actual": y_test,
+        "predicted": predictions,
+        "test_texts": x_test,
+        "train_count": len(x_train),
+        "test_count": len(x_test)
+    }
+
+
 def database():
 
     conn = sqlite3.connect(
-        "balagh_v2.db",
+        "balagh_lite.db",
         timeout=30
     )
 
@@ -175,12 +269,13 @@ def database():
     """)
 
     conn.commit()
+
     return conn
 
 
 def get_reports():
 
-    with database() as conn:
+    with closing(database()) as conn:
 
         return pd.read_sql_query(
             "SELECT * FROM reports "
@@ -191,7 +286,7 @@ def get_reports():
 
 def save_report(result):
 
-    with database() as conn:
+    with closing(database()) as conn:
 
         conn.execute("""
             INSERT INTO reports
@@ -210,59 +305,6 @@ def save_report(result):
         ))
 
         conn.commit()
-
-
-@st.cache_resource
-def load_models():
-
-    encoder = SentenceTransformer(
-        "sentence-transformers/"
-        "paraphrase-multilingual-MiniLM-L12-v2"
-    )
-
-    embeddings = encoder.encode(
-        texts,
-        normalize_embeddings=True,
-        convert_to_numpy=True
-    ).astype("float32")
-
-    classifier = LogisticRegression(
-        max_iter=1000,
-        random_state=42
-    )
-
-    classifier.fit(embeddings, labels)
-
-    return encoder, classifier, embeddings
-
-
-@st.cache_resource
-def load_reranker():
-
-    return CrossEncoder(
-        "cross-encoder/"
-        "mmarco-mMiniLMv2-L12-H384-v1"
-    )
-
-
-@st.cache_resource
-def load_transformer():
-
-    name = (
-        "CAMeL-Lab/"
-        "bert-base-arabic-camelbert-mix"
-    )
-
-    tokenizer = AutoTokenizer.from_pretrained(name)
-
-    model = AutoModel.from_pretrained(
-        name,
-        attn_implementation="eager"
-    )
-
-    model.eval()
-
-    return tokenizer, model
 
 
 def extract_entities(text):
@@ -285,178 +327,125 @@ def extract_entities(text):
     )
 
 
-def analyze(text):
-
-    safe = clean_text(text)
-
-    encoder, classifier, embeddings = load_models()
-
-    query = encoder.encode(
-        [safe],
-        normalize_embeddings=True,
-        convert_to_numpy=True
-    ).astype("float32")
-
-    category = classifier.predict(query)[0]
-
-    confidence = float(
-        classifier.predict_proba(query).max()
-    )
-
-    issue, location = extract_entities(safe)
+def find_similar(text, model):
 
     saved = get_reports()
 
-    candidates = texts + saved["text"].tolist()
+    candidates = (
+        texts + saved["text"].tolist()
+    )
 
-    candidate_labels = (
+    categories = (
         labels + saved["category"].tolist()
     )
 
-    candidate_ids = [
+    ids = [
         "DEMO-" + str(i + 1)
         for i in range(len(texts))
     ] + saved["id"].tolist()
 
-    vectors = embeddings
+    vectorizer = model.named_steps["tfidf"]
 
-    if not saved.empty:
-
-        saved_vectors = encoder.encode(
-            saved["text"].tolist(),
-            normalize_embeddings=True,
-            convert_to_numpy=True
-        ).astype("float32")
-
-        vectors = np.vstack([
-            embeddings,
-            saved_vectors
-        ])
-
-    index = faiss.IndexFlatIP(
-        vectors.shape[1]
+    query_vector = vectorizer.transform(
+        [text]
     )
 
-    index.add(vectors)
+    candidate_vectors = vectorizer.transform(
+        candidates
+    )
 
-    scores, ids = index.search(query, 5)
+    scores = cosine_similarity(
+        query_vector,
+        candidate_vectors
+    )[0]
 
-    similar = pd.DataFrame({
-        "رقم البلاغ": [
-            candidate_ids[i] for i in ids[0]
-        ],
-        "البلاغ": [
-            candidates[i] for i in ids[0]
-        ],
-        "التصنيف": [
-            candidate_labels[i] for i in ids[0]
-        ],
-        "التشابه": scores[0]
-    })
+    top = np.argsort(scores)[::-1][:5]
 
-    warnings = []
+    results = []
 
-    try:
+    for i in top:
 
-        raise RuntimeError("Cross-Encoder disabled to save memory")
-        pairs = [
-            [safe, item]
-            for item in similar["البلاغ"]
-        ]
+        if scores[i] <= 0:
+            continue
 
-        similar["درجة إعادة الترتيب"] = (
-            reranker.predict(pairs)
-        )
-
-        similar = similar.sort_values(
-            "درجة إعادة الترتيب",
-            ascending=False
-        )
-
-    except Exception:
-
-        warnings.append(
-            "تعذرت إعادة ترتيب النتائج، "
-            "تم استخدام البحث الدلالي فقط."
-        )
-
-    token_count = None
-    attention = None
-    tokens = []
-
-    try:
-
-        raise RuntimeError("CAMeLBERT disabled to save memory")
-        inputs = tokenizer(
-            safe,
-            return_tensors="pt",
-            truncation=True,
-            max_length=128
-        )
-
-        with torch.no_grad():
-
-            output = model(
-                **inputs,
-                output_attentions=True
+        results.append({
+            "رقم البلاغ": ids[i],
+            "البلاغ": candidates[i],
+            "التصنيف": categories[i],
+            "التشابه": round(
+                float(scores[i]) * 100, 1
             )
+        })
 
-        tokens = tokenizer.convert_ids_to_tokens(
-            inputs["input_ids"][0]
-        )
+    return pd.DataFrame(
+        results,
+        columns=[
+            "رقم البلاغ",
+            "البلاغ",
+            "التصنيف",
+            "التشابه"
+        ]
+    )
 
-        token_count = len(tokens)
 
-        attention = (
-            output.attentions[-1][0, 0]
-            .cpu()
-            .numpy()
-        )
+def analyze(text):
 
-    except Exception:
+    safe = clean_text(text)
 
-        warnings.append(
-            "تعذر تشغيل تحليل Transformer."
-        )
+    trained = train_model()
+
+    model = trained["model"]
+
+    category = model.predict([safe])[0]
+
+    confidence = float(
+        model.predict_proba([safe]).max()
+    )
+
+    issue, location = extract_entities(safe)
+
+    similar = find_similar(
+        safe,
+        model
+    )
 
     return {
-        "id": "BLG-" + uuid.uuid4().hex[:8].upper(),
+        "id": (
+            "BLG-" +
+            uuid.uuid4().hex[:8].upper()
+        ),
         "text": safe,
         "category": category,
-        "confidence": confidence,
         "issue": issue,
         "location": location,
-        "similar": similar,
-        "token_count": token_count,
-        "tokens": tokens,
-        "attention": attention,
-        "warnings": warnings
+        "confidence": confidence,
+        "similar": similar
     }
 
 
 st.title("🏙️ Balagh AI | بلاغ")
 
 st.caption(
-    "منصة ذكية لإدارة وتحليل البلاغات البلدية"
+    "منصة ذكية لتحليل وإدارة البلاغات البلدية"
 )
 
-st.sidebar.title("Balagh AI")
+st.sidebar.title("القائمة الرئيسية")
 
 page = st.sidebar.radio(
-    "القائمة الرئيسية",
+    "انتقل إلى",
     [
         "الرئيسية",
         "تقديم بلاغ",
         "إدارة البلاغات",
-        "تقييم النظام"
+        "تقييم النظام",
+        "عن المشروع"
     ]
 )
 
 st.sidebar.divider()
 
 st.sidebar.caption(
-    "مشروع تعليمي للذكاء الاصطناعي "
-    "ومعالجة اللغة الطبيعية"
+    "نموذج تعليمي مستقل"
 )
 
 reports = get_reports()
@@ -466,11 +455,6 @@ if page == "الرئيسية":
 
     st.header("لوحة التحكم")
 
-    st.write(
-        "مرحبًا بك في منصة بلاغ، "
-        "لتحليل ومتابعة البلاغات البلدية."
-    )
-
     c1, c2, c3, c4 = st.columns(4)
 
     c1.metric(
@@ -479,29 +463,37 @@ if page == "الرئيسية":
     )
 
     c2.metric(
-        "بلاغات جديدة",
-        int((reports["status"] == "جديد").sum())
+        "جديد",
+        int(
+            (reports["status"] == "جديد").sum()
+        )
     )
 
     c3.metric(
         "قيد المعالجة",
         int(
-            (reports["status"] == "قيد المعالجة").sum()
+            (
+                reports["status"] ==
+                "قيد المعالجة"
+            ).sum()
         )
     )
 
     c4.metric(
         "تمت المعالجة",
         int(
-            (reports["status"] == "تمت المعالجة").sum()
+            (
+                reports["status"] ==
+                "تمت المعالجة"
+            ).sum()
         )
     )
 
     if reports.empty:
 
         st.info(
-            "لا توجد بلاغات مسجلة حتى الآن. "
-            "يمكنك تقديم بلاغ من القائمة الجانبية."
+            "لا توجد بلاغات مسجلة حاليًا. "
+            "يمكنك تقديم بلاغ جديد."
         )
 
     else:
@@ -510,7 +502,7 @@ if page == "الرئيسية":
 
         with c1:
 
-            st.subheader("البلاغات حسب التصنيف")
+            st.subheader("تصنيفات البلاغات")
 
             st.bar_chart(
                 reports["category"].value_counts()
@@ -527,15 +519,7 @@ if page == "الرئيسية":
         st.subheader("أحدث البلاغات")
 
         st.dataframe(
-            reports[
-                [
-                    "id",
-                    "category",
-                    "location",
-                    "status",
-                    "created_at"
-                ]
-            ].head(10),
+            reports.head(10),
             hide_index=True,
             use_container_width=True
         )
@@ -545,24 +529,21 @@ elif page == "تقديم بلاغ":
 
     st.header("تقديم بلاغ جديد")
 
-    st.write(
-        "اكتب تفاصيل المشكلة وسيقوم النظام "
-        "بتحليل البلاغ وتصنيفه تلقائيًا."
-    )
-
     st.caption(
-        "يرجى عدم إدخال بيانات شخصية حقيقية."
+        "يرجى عدم إدخال معلومات شخصية حقيقية."
     )
 
-    with st.form("report_form"):
+    with st.form(
+        "report_form",
+        clear_on_submit=True
+    ):
 
         text = st.text_area(
             "تفاصيل البلاغ",
             placeholder=(
-                "مثال: تسرب مياه في حي السعادة "
-                "منذ الصباح"
+                "مثال: تسرب مياه في حي السعادة"
             ),
-            height=170,
+            height=160,
             max_chars=2000
         )
 
@@ -572,16 +553,23 @@ elif page == "تقديم بلاغ":
 
     if submitted:
 
+        st.session_state.pop(
+            "last_result",
+            None
+        )
+
         if not text.strip():
 
-            st.warning("يرجى كتابة تفاصيل البلاغ.")
+            st.warning(
+                "يرجى كتابة تفاصيل البلاغ."
+            )
 
         else:
 
             try:
 
                 with st.spinner(
-                    "جاري تحليل البلاغ وتسجيله..."
+                    "جاري تحليل وتسجيل البلاغ..."
                 ):
 
                     result = analyze(text)
@@ -595,8 +583,7 @@ elif page == "تقديم بلاغ":
             except Exception as error:
 
                 st.error(
-                    "تعذر تسجيل البلاغ. "
-                    "يرجى المحاولة مرة أخرى."
+                    "تعذر تسجيل البلاغ."
                 )
 
                 st.caption(str(error))
@@ -624,8 +611,8 @@ elif page == "تقديم بلاغ":
         )
 
         c3.metric(
-            "الحالة",
-            "جديد"
+            "احتمال النموذج",
+            f"{result['confidence']:.1%}"
         )
 
         st.write(
@@ -634,25 +621,36 @@ elif page == "تقديم بلاغ":
         )
 
         st.write(
-            "**نص البلاغ المسجل:**",
+            "**البلاغ بعد حماية الخصوصية:**",
             result["text"]
         )
 
+        if result["confidence"] < 0.60:
+
+            st.warning(
+                "التصنيف يحتاج مراجعة بشرية."
+            )
+
         st.subheader("البلاغات المشابهة")
 
-        st.dataframe(
-            result["similar"],
-            hide_index=True,
-            use_container_width=True
-        )
+        if result["similar"].empty:
+
+            st.info(
+                "لم يتم العثور على نتائج مشابهة."
+            )
+
+        else:
+
+            st.dataframe(
+                result["similar"],
+                hide_index=True,
+                use_container_width=True
+            )
 
         st.caption(
-            "تتضمن النتائج بلاغات تعليمية "
-            "وبلاغات مسجلة في التطبيق."
+            "نتائج التشابه تعتمد على النص، "
+            "ولا تؤكد تكرار البلاغ."
         )
-
-        for warning in result["warnings"]:
-            st.warning(warning)
 
 
 elif page == "إدارة البلاغات":
@@ -699,20 +697,12 @@ elif page == "إدارة البلاغات":
         if status_filter != "الكل":
 
             filtered = filtered[
-                filtered["status"] == status_filter
+                filtered["status"] ==
+                status_filter
             ]
 
         st.dataframe(
-            filtered[
-                [
-                    "id",
-                    "text",
-                    "category",
-                    "location",
-                    "status",
-                    "created_at"
-                ]
-            ],
+            filtered,
             hide_index=True,
             use_container_width=True
         )
@@ -735,11 +725,11 @@ elif page == "إدارة البلاغات":
 
         if st.button("حفظ الحالة"):
 
-            with database() as conn:
+            with closing(database()) as conn:
 
                 conn.execute(
-                    "UPDATE reports SET status = ? "
-                    "WHERE id = ?",
+                    "UPDATE reports "
+                    "SET status = ? WHERE id = ?",
                     (new_status, selected)
                 )
 
@@ -748,7 +738,7 @@ elif page == "إدارة البلاغات":
             st.rerun()
 
         st.download_button(
-            "تصدير البلاغات CSV",
+            "تصدير البلاغات",
             filtered.to_csv(
                 index=False
             ).encode("utf-8-sig"),
@@ -759,149 +749,148 @@ elif page == "إدارة البلاغات":
 
 elif page == "تقييم النظام":
 
-    st.header("مؤشرات أداء النظام")
+    st.header("تقييم أداء النموذج")
 
-    st.caption(
-        "تقييم فعلي باستخدام بيانات تعليمية اصطناعية."
+    trained = train_model()
+
+    metrics = trained["metrics"]
+
+    c1, c2, c3, c4 = st.columns(4)
+
+    c1.metric(
+        "Accuracy",
+        f"{metrics['accuracy']:.1%}"
     )
 
-    if st.button("حساب مؤشرات الأداء"):
+    c2.metric(
+        "Precision",
+        f"{metrics['macro avg']['precision']:.1%}"
+    )
 
-        try:
+    c3.metric(
+        "Recall",
+        f"{metrics['macro avg']['recall']:.1%}"
+    )
 
-            with st.spinner(
-                "جاري تقييم النموذج..."
-            ):
+    c4.metric(
+        "Macro-F1",
+        f"{metrics['macro avg']['f1-score']:.1%}"
+    )
 
-                encoder, classifier, embeddings = (
-                    load_models()
-                )
+    st.write(
+        "Training samples:",
+        trained["train_count"],
+        "| Test samples:",
+        trained["test_count"]
+    )
 
-                y = np.array(labels)
+    st.subheader("الأداء حسب التصنيف")
 
-                train, test = train_test_split(
-                    np.arange(len(y)),
-                    test_size=0.3,
-                    random_state=42,
-                    stratify=y
-                )
+    df = pd.DataFrame(metrics).T
 
-                evaluation_model = LogisticRegression(
-                    max_iter=1000,
-                    random_state=42
-                )
+    st.bar_chart(
+        df.loc[
+            list(DATA.keys()),
+            ["precision", "recall", "f1-score"]
+        ]
+    )
 
-                evaluation_model.fit(
-                    embeddings[train],
-                    y[train]
-                )
+    st.dataframe(
+        df,
+        use_container_width=True
+    )
 
-                predictions = evaluation_model.predict(
-                    embeddings[test]
-                )
+    st.subheader("Confusion Matrix")
 
-                metrics = classification_report(
-                    y[test],
-                    predictions,
-                    output_dict=True,
-                    zero_division=0
-                )
+    matrix = confusion_matrix(
+        trained["actual"],
+        trained["predicted"],
+        labels=list(DATA.keys())
+    )
 
-            c1, c2, c3, c4 = st.columns(4)
+    st.dataframe(
+        pd.DataFrame(
+            matrix,
+            index=list(DATA.keys()),
+            columns=list(DATA.keys())
+        ),
+        use_container_width=True
+    )
 
-            c1.metric(
-                "Accuracy",
-                f"{metrics['accuracy']:.1%}"
+    st.subheader("نتائج الاختبار الفعلية")
+
+    st.dataframe(
+        pd.DataFrame({
+            "Report": trained["test_texts"],
+            "Actual": trained["actual"],
+            "Predicted": trained["predicted"],
+            "Correct": (
+                np.array(trained["actual"]) ==
+                trained["predicted"]
             )
+        }),
+        hide_index=True,
+        use_container_width=True
+    )
 
-            c2.metric(
-                "Precision",
-                f"{metrics['macro avg']['precision']:.1%}"
-            )
+    st.warning(
+        "تم التقييم على بيانات تعليمية اصطناعية "
+        "وليست بلاغات بلدية حقيقية."
+    )
 
-            c3.metric(
-                "Recall",
-                f"{metrics['macro avg']['recall']:.1%}"
-            )
 
-            c4.metric(
-                "Macro-F1",
-                f"{metrics['macro avg']['f1-score']:.1%}"
-            )
+elif page == "عن المشروع":
 
-            st.subheader("الأداء حسب التصنيف")
+    st.header("Balagh AI")
 
-            df = pd.DataFrame(metrics).T
+    st.write(
+        "منصة تعليمية لتحليل البلاغات البلدية "
+        "باستخدام معالجة اللغة الطبيعية "
+        "والتعلم الآلي."
+    )
 
-            st.bar_chart(
-                df.loc[
-                    list(DATA.keys()),
-                    ["precision", "recall", "f1-score"]
-                ]
-            )
+    st.table(pd.DataFrame({
+        "Component": [
+            "Preprocessing",
+            "Privacy",
+            "Feature Extraction",
+            "Classification",
+            "Entity Extraction",
+            "Retrieval",
+            "Evaluation",
+            "Database"
+        ],
+        "Technology": [
+            "Arabic Normalization",
+            "Regex PII Masking",
+            "TF-IDF",
+            "Logistic Regression",
+            "Rule-based Extraction",
+            "Cosine Similarity",
+            "Held-out Test Set",
+            "SQLite"
+        ]
+    }))
 
-            st.subheader("Confusion Matrix")
+    st.metric(
+        "البلاغات التعليمية",
+        len(texts)
+    )
 
-            matrix = confusion_matrix(
-                y[test],
-                predictions,
-                labels=list(DATA.keys())
-            )
+    st.metric(
+        "عدد التصنيفات",
+        len(DATA)
+    )
 
-            st.dataframe(
-                pd.DataFrame(
-                    matrix,
-                    index=list(DATA.keys()),
-                    columns=list(DATA.keys())
-                ),
-                use_container_width=True
-            )
-
-            st.subheader("نتائج الاختبار")
-
-            st.dataframe(pd.DataFrame({
-                "Report": [texts[i] for i in test],
-                "Actual": y[test],
-                "Predicted": predictions,
-                "Correct": y[test] == predictions
-            }))
-
-            st.caption(
-                "35 training samples | 15 test samples"
-            )
-
-        except Exception as error:
-
-            st.error(str(error))
-
-    if "last_result" in st.session_state:
-
-        result = st.session_state["last_result"]
-
-        if result["attention"] is not None:
-
-            st.subheader("Transformer Attention")
-
-            st.metric(
-                "Tokens",
-                result["token_count"]
-            )
-
-            st.dataframe(
-                pd.DataFrame(
-                    result["attention"],
-                    index=result["tokens"],
-                    columns=result["tokens"]
-                ).style.background_gradient(
-                    cmap="Blues"
-                ),
-                use_container_width=True
-            )
+    st.info(
+        "هذه النسخة محسنة لتعمل باستهلاك "
+        "منخفض للذاكرة."
+    )
 
 
 st.divider()
 
 st.caption(
-    "Balagh AI © | Educational prototype "
+    "Balagh AI | Educational NLP Project "
     "| ليست منصة بلدية رسمية"
 )
