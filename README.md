@@ -45,15 +45,7 @@ An intelligent municipal report analysis project using Natural Language Processi
 
 Nasser Alotaibi - ناصر العتيبي
 
-## Balagh AI - Web Demo
-
-[Open Balagh AI](https://balagh-ai.lovable.app)
-
-Educational municipal report management and analysis platform.
-
-Live NLP integration is not connected yet.
-
-[Model Evaluation Data](balagh-evaluation.json)
+**Live Demo:** https://sage-bavarois-c0c23a.netlify.app
 
 Open Balagh AI – Upgraded Demo
 https://share.streamlit.io/-/auth/app?redirect_uri=https%3A%2F%2Fbalagh-ai-v2.streamlit.app%2F 
