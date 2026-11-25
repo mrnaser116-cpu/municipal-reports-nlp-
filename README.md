@@ -34,3 +34,17 @@ An intelligent municipal report analysis project using Natural Language Processi
 ## Live Demo
 
 [Municipal Reports - Streamlit Demo](https://baladiya-nlp-demo.streamlit.app)
+
+
+## Project Author
+Nasser Alotaibi - ناصر العتيبي
+
+## Balagh AI - Web Demo
+
+[Open Balagh AI](https://balagh-ai.lovable.app)
+
+Educational municipal report management and analysis platform.
+
+Live NLP integration is not connected yet.
+
+[Model Evaluation Data](balagh-evaluation.json)
