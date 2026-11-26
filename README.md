@@ -41,7 +41,7 @@ An intelligent municipal report analysis project using Natural Language Processi
 ## Project Author
 
 
-هاذي كانت المفروض واجهة الموقع لكن واجهة مشكله في تعليم ألة بس سويته في رابط ثاني تحت مش ولا بد بس اهم شي ان ألالة فيه متعلم بس مو افضل شي  لكن  شغاله فيه الاكواد
+
 
 
 
